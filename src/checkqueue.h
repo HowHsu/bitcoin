@@ -75,11 +75,18 @@ private:
         std::vector<T> vChecks;
         vChecks.reserve(nBatchSize);
         unsigned int nNow = 0;
+        unsigned int q_sz = 0;
+		std::chrono::time_point<std::chrono::high_resolution_clock> start_time1;
+        std::chrono::time_point<std::chrono::high_resolution_clock> end_time1;
+		std::chrono::time_point<std::chrono::high_resolution_clock> before_lock;
+		std::chrono::time_point<std::chrono::high_resolution_clock> end_lock;
         std::optional<R> local_result;
         bool do_work;
         do {
             {
+				before_lock = std::chrono::high_resolution_clock::now();
                 WAIT_LOCK(m_mutex, lock);
+				end_lock = std::chrono::high_resolution_clock::now();
                 // first do the clean-up of the previous loop run (allowing us to do it in the same critsect)
                 if (nNow) {
                     if (local_result.has_value() && !m_result.has_value()) {
@@ -113,18 +120,23 @@ private:
                     return std::nullopt;
                 }
 
+				start_time1 = std::chrono::high_resolution_clock::now();
                 // Decide how many work units to process now.
                 // * Do not try to do everything at once, but aim for increasingly smaller batches so
                 //   all workers finish approximately simultaneously.
                 // * Try to account for idle jobs which will instantly start helping.
                 // * Don't do batches smaller than 1 (duh), or larger than nBatchSize.
                 nNow = std::max(1U, std::min(nBatchSize, (unsigned int)queue.size() / (nTotal + nIdle + 1)));
+				q_sz = (unsigned int)queue.size();
                 auto start_it = queue.end() - nNow;
                 vChecks.assign(std::make_move_iterator(start_it), std::make_move_iterator(queue.end()));
                 queue.erase(start_it, queue.end());
                 // Check whether we need to do work at all
                 do_work = !m_result.has_value();
+				end_time1 = std::chrono::high_resolution_clock::now();
             }
+			auto duration1 = std::chrono::duration_cast<std::chrono::nanoseconds>(end_time1 - start_time1);
+			auto start_time2 = std::chrono::high_resolution_clock::now();
             // execute work
             if (do_work) {
                 for (T& check : vChecks) {
@@ -132,6 +144,13 @@ private:
                     if (local_result.has_value()) break;
                 }
             }
+			auto end_time2 = std::chrono::high_resolution_clock::now();
+			auto duration2 = std::chrono::duration_cast<std::chrono::nanoseconds>(end_time2 - start_time2);
+			auto duration_wait_lock = std::chrono::duration_cast<std::chrono::nanoseconds>(end_lock-before_lock);
+			std::cout<<"q_sz: "<<q_sz<<"; nNow: "<<nNow<<"; duration(ns): "<<duration1.count()<<std::endl;
+			std::cout<<"lock wait: "<<duration_wait_lock.count()<<std::endl;
+			std::cout<<"calc duration(ns): "<<duration2.count()<<std::endl;
+			std::cout<<"worker num: "<<m_worker_threads.size()<<std::endl;
             vChecks.clear();
         } while (true);
     }
