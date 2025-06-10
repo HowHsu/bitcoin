@@ -113,17 +113,22 @@ private:
                     return std::nullopt;
                 }
 
-                // Decide how many work units to process now.
-                // * Do not try to do everything at once, but aim for increasingly smaller batches so
-                //   all workers finish approximately simultaneously.
-                // * Try to account for idle jobs which will instantly start helping.
-                // * Don't do batches smaller than 1 (duh), or larger than nBatchSize.
-                nNow = std::max(1U, std::min(nBatchSize, (unsigned int)queue.size() / (nTotal + nIdle + 1)));
-                auto start_it = queue.end() - nNow;
-                vChecks.assign(std::make_move_iterator(start_it), std::make_move_iterator(queue.end()));
-                queue.erase(start_it, queue.end());
                 // Check whether we need to do work at all
                 do_work = !m_result.has_value();
+                if (!do_work) {
+                    nNow = queue.size();
+                    queue.clear();
+                } else {
+                    // Decide how many work units to process now.
+                    // * Do not try to do everything at once, but aim for increasingly smaller batches so
+                    //   all workers finish approximately simultaneously.
+                    // * Try to account for idle jobs which will instantly start helping.
+                    // * Don't do batches smaller than 1 (duh), or larger than nBatchSize.
+                    nNow = std::max(1U, std::min(nBatchSize, (unsigned int)queue.size() / (nTotal + nIdle + 1)));
+                    auto start_it = queue.end() - nNow;
+                    vChecks.assign(std::make_move_iterator(start_it), std::make_move_iterator(queue.end()));
+                    queue.erase(start_it, queue.end());
+                }
             }
             // execute work
             if (do_work) {
@@ -131,8 +136,8 @@ private:
                     local_result = check();
                     if (local_result.has_value()) break;
                 }
+                vChecks.clear();
             }
-            vChecks.clear();
         } while (true);
     }
 
