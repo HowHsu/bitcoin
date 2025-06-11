@@ -77,6 +77,9 @@ private:
         unsigned int nNow = 0;
         std::optional<R> local_result;
         bool do_work;
+
+        if (fMaster) nTotal++;
+
         do {
             {
                 WAIT_LOCK(m_mutex, lock);
@@ -90,9 +93,6 @@ private:
                         // We processed the last element; inform the master it can exit and return the result
                         m_master_cv.notify_one();
                     }
-                } else {
-                    // first iteration
-                    nTotal++;
                 }
                 // logically, the do loop starts here
                 while (queue.empty() && !m_request_stop) {
@@ -157,6 +157,8 @@ public:
                 Loop(false /* worker thread */);
             });
         }
+
+        nTotal = worker_threads_num;
     }
 
     // Since this class manages its own resources, which is a thread
