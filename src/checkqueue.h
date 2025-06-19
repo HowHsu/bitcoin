@@ -147,6 +147,7 @@ private:
     std::atomic<int> nNext;
     bool fComplete GUARDED_BY(m_mutex){false};
     std::vector<bool> m_done;
+    std::atomic<bool> fResultDone;
 
     /** Internal function that does bulk of the verification work. If fMaster, return the final result. */
     std::optional<R> LoopAtomic(bool fMaster, int id) EXCLUSIVE_LOCKS_REQUIRED(!m_mutex)
@@ -180,11 +181,14 @@ private:
                     local_result = queue[i]();
                     if (local_result.has_value()) {
                         LOCK(m_mutex);
-                        if (!m_result.has_value())
+                        if (!m_result.has_value()) {
                             std::swap(local_result, m_result);
+                            fResultDone = true;
+                        }
                         break;
                     }
                 }
+                if (fResultDone) break;
             }
 
             if (fMaster) {
@@ -258,6 +262,7 @@ public:
             LOCK(m_mutex);
             m_result = std::nullopt;
             fComplete = false;
+            fResultDone = false;
         }
         return ret;
     }
