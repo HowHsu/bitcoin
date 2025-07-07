@@ -112,6 +112,123 @@ bool BuildChainTestingSetup::BuildChain(const CBlockIndex* pindex,
     return true;
 }
 
+void Sync(int height, std::mutex& mtx, std::condition_variable& master_cv, std::condition_variable& sync_cv, std::atomic<bool>& reorg_done, std::atomic<bool>& wait_for_reorg)
+{
+    const CBlockIndex* pindex = m_best_block_index.load();
+    if (!m_synced) {
+        std::chrono::steady_clock::time_point last_log_time{0s};
+        std::chrono::steady_clock::time_point last_locator_write_time{0s};
+        while (true) {
+            if (pindex->nHeight == height) {
+                WAIT_LOCK(mtx, lock);
+                wait_for_reorg = true;
+                master_cv.notify_one();
+                sync_cv.wait(lock, [this] { return reorg_done.load(); });
+
+            }
+            if (m_interrupt) {
+                LogPrintf("%s: m_interrupt set; exiting ThreadSync\n", GetName());
+
+                SetBestBlockIndex(pindex);
+                // No need to handle errors in Commit. If it fails, the error will be already be
+                // logged. The best way to recover is to continue, as index cannot be corrupted by
+                // a missed commit to disk for an advanced index state.
+                Commit();
+                return;
+            }
+
+            const CBlockIndex* pindex_next = WITH_LOCK(cs_main, return NextSyncBlock(pindex, m_chainstate->m_chain));
+            // If pindex_next is null, it means pindex is the chain tip, so
+            // commit data indexed so far.
+            if (!pindex_next) {
+                SetBestBlockIndex(pindex);
+                // No need to handle errors in Commit. See rationale above.
+                Commit();
+
+                // If pindex is still the chain tip after committing, exit the
+                // sync loop. It is important for cs_main to be locked while
+                // setting m_synced = true, otherwise a new block could be
+                // attached while m_synced is still false, and it would not be
+                // indexed.
+                LOCK(::cs_main);
+                pindex_next = NextSyncBlock(pindex, m_chainstate->m_chain);
+                if (!pindex_next) {
+                    m_synced = true;
+                    break;
+                }
+            }
+
+            if (pindex_next->pprev != pindex && !Rewind(pindex, pindex_next->pprev)) {
+                FatalErrorf("%s: Failed to rewind index %s to a previous chain tip", __func__, GetName());
+                return;
+            }
+            pindex = pindex_next;
+
+
+            if (!ProcessBlock(pindex)) return; // error logged internally
+
+            auto current_time{std::chrono::steady_clock::now()};
+            if (last_log_time + SYNC_LOG_INTERVAL < current_time) {
+                LogPrintf("Syncing %s with block chain from height %d\n",
+                        GetName(), pindex->nHeight);
+                last_log_time = current_time;
+            }
+
+            if (last_locator_write_time + SYNC_LOCATOR_WRITE_INTERVAL < current_time) {
+                SetBestBlockIndex(pindex);
+                last_locator_write_time = current_time;
+                // No need to handle errors in Commit. See rationale above.
+                Commit();
+            }
+        }
+    }
+
+    if (pindex) {
+        LogPrintf("%s is enabled at height %d\n", GetName(), pindex->nHeight);
+    } else {
+        LogPrintf("%s is enabled\n", GetName());
+    }
+}
+
+BOOST_FIXTURE_TEST_CASE(blockfilter_index_sync_reorg, TestChain100Setup)
+{
+    BlockFilterIndex filter_index(interfaces::MakeChain(m_node), BlockFilterType::BASIC, 1 << 20, true);
+    BOOST_REQUIRE(filter_index.Init());
+
+    int pause_height = 97;
+
+    std::thread sync_thread([&] { filter_index->Sync(pause_height, mtx, master_cv, sync_cv, reorg_done, wait_for_reorg); });
+
+    {
+        WAIT_LOCK(mtx, lock);
+        master_cv.wait(lock, [&] { return wait_for_reorg.load(); });
+    }
+
+    // reorg
+    const CBlockIndex* forki;
+    {
+        LOCK(cs_main);
+        forki = m_node.chainman->ActiveChain()[96];
+    }
+    CKey coinbase_key_A = GenerateRandomKey();
+    CScript coinbase_script_pub_key_A = GetScriptForDestination(PKHash(coinbase_key_A.GetPubKey()));
+    std::vector<std::shared_ptr<CBlock>> chainA;
+    BOOST_REQUIRE(BuildChain(forki, coinbase_script_pub_key_A, 4, chainA));
+
+    for (size_t i = 0; i < 4; i++) {
+        const auto& block = chainA[i];
+        BOOST_REQUIRE(Assert(m_node.chainman)->ProcessNewBlock(block, true, true, nullptr));
+    }
+
+    {
+        WAIT_LOCK(mtx, lock);
+        reorg_done = true;
+        sync_cv.notify_one();
+    }
+
+    sync_thread.join();
+}
+
 BOOST_FIXTURE_TEST_CASE(blockfilter_index_initial_sync, BuildChainTestingSetup)
 {
     BlockFilterIndex filter_index(interfaces::MakeChain(m_node), BlockFilterType::BASIC, 1 << 20, true);
@@ -304,5 +421,76 @@ BOOST_FIXTURE_TEST_CASE(blockfilter_index_init_destroy, BasicTestingSetup)
     filter_index = GetBlockFilterIndex(BlockFilterType::BASIC);
     BOOST_CHECK(filter_index == nullptr);
 }
+
+void sync(BlockFilterIndex& filter_index)
+{
+    const CBlockIndex* pindex = m_best_block_index.load();
+    if (!m_synced) {
+        std::chrono::steady_clock::time_point last_log_time{0s};
+        std::chrono::steady_clock::time_point last_locator_write_time{0s};
+        while (true) {
+            if (m_interrupt) {
+                LogPrintf("%s: m_interrupt set; exiting ThreadSync\n", GetName());
+
+                SetBestBlockIndex(pindex);
+                // No need to handle errors in Commit. If it fails, the error will be already be
+                // logged. The best way to recover is to continue, as index cannot be corrupted by
+                // a missed commit to disk for an advanced index state.
+                Commit();
+                return;
+            }
+
+            const CBlockIndex* pindex_next = WITH_LOCK(cs_main, return NextSyncBlock(pindex, m_chainstate->m_chain));
+            // If pindex_next is null, it means pindex is the chain tip, so
+            // commit data indexed so far.
+            if (!pindex_next) {
+                SetBestBlockIndex(pindex);
+                // No need to handle errors in Commit. See rationale above.
+                Commit();
+
+                // If pindex is still the chain tip after committing, exit the
+                // sync loop. It is important for cs_main to be locked while
+                // setting m_synced = true, otherwise a new block could be
+                // attached while m_synced is still false, and it would not be
+                // indexed.
+                LOCK(::cs_main);
+                pindex_next = NextSyncBlock(pindex, m_chainstate->m_chain);
+                if (!pindex_next) {
+                    m_synced = true;
+                    break;
+                }
+            }
+            if (pindex_next->pprev != pindex && !Rewind(pindex, pindex_next->pprev)) {
+                FatalErrorf("%s: Failed to rewind index %s to a previous chain tip", __func__, GetName());
+                return;
+            }
+            pindex = pindex_next;
+
+
+            if (!ProcessBlock(pindex)) return; // error logged internally
+
+            auto current_time{std::chrono::steady_clock::now()};
+            if (last_log_time + SYNC_LOG_INTERVAL < current_time) {
+                LogPrintf("Syncing %s with block chain from height %d\n",
+                          GetName(), pindex->nHeight);
+                last_log_time = current_time;
+            }
+
+            if (last_locator_write_time + SYNC_LOCATOR_WRITE_INTERVAL < current_time) {
+                SetBestBlockIndex(pindex);
+                last_locator_write_time = current_time;
+                // No need to handle errors in Commit. See rationale above.
+                Commit();
+            }
+        }
+    }
+
+    if (pindex) {
+        LogPrintf("%s is enabled at height %d\n", GetName(), pindex->nHeight);
+    } else {
+        LogPrintf("%s is enabled\n", GetName());
+    }
+}
+
 
 BOOST_AUTO_TEST_SUITE_END()
