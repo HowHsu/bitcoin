@@ -1922,8 +1922,13 @@ bool AppInitMain(NodeContext& node, interfaces::BlockAndHeaderTipInfo* tip_info)
 
     node.background_init_thread = std::thread(&util::TraceThread, "initload", [=, &chainman, &args, &node] {
         ScheduleBatchPriority();
+
+        auto start_time = NodeClock::now();
         // Import blocks and ActivateBestChain()
         ImportBlocks(chainman, vImportFiles);
+        int64_t dur_sec = std::chrono::duration_cast<std::chrono::seconds>(NodeClock::now() - start_time).count();
+        std::cout<<"time spent for ImportBlocks: "<<dur_sec<<std::endl;
+
         if (args.GetBoolArg("-stopafterblockimport", DEFAULT_STOPAFTERBLOCKIMPORT)) {
             LogInfo("Stopping after block import");
             if (!(Assert(node.shutdown_request))()) {
