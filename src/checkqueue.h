@@ -9,6 +9,7 @@
 #include <sync.h>
 #include <tinyformat.h>
 #include <util/threadnames.h>
+#include <common/system.h>
 
 #include <algorithm>
 #include <iterator>
@@ -70,7 +71,7 @@ private:
     unsigned int nTodo GUARDED_BY(m_mutex){0};
 
     //! The maximum number of elements to be processed in one batch
-    const unsigned int nBatchSize;
+    unsigned int nBatchSize;
 
     std::vector<std::thread> m_worker_threads;
     bool m_request_stop GUARDED_BY(m_mutex){false};
@@ -146,6 +147,7 @@ private:
     std::atomic<int> nNext{0};
     int nWorkDone GUARDED_BY(m_mutex){0};
     bool fComplete GUARDED_BY(m_mutex){false};
+    std::atomic<bool> fResultDone{false};
 
     /** Internal function that does bulk of the verification work. If fMaster, return the final result. */
     std::optional<R> LoopAtomic(bool fMaster, int nr_workers) EXCLUSIVE_LOCKS_REQUIRED(!m_mutex)
@@ -184,10 +186,12 @@ private:
                         LOCK(m_mutex);
                         if (!m_result.has_value()) {
                             std::swap(local_result, m_result);
+                            fResultDone = true;
                         }
                         break;
                     }
                 }
+                if (fResultDone) break;
             }
 
             if (fMaster) {
@@ -212,11 +216,16 @@ public:
 
     //! Create a new check queue
     explicit CCheckQueue(unsigned int batch_size, int worker_threads_num)
-        : nBatchSize(worker_threads_num <= MAX_SCRIPTCHECK_MUTEX_MODE_THRESHOLD ? batch_size : 5)
     {
-        fAtomic = false;
+        // Some tests skip user interface and call CCheckQueue() directly
+        // So this code is necessary
+        worker_threads_num = std::min(worker_threads_num, GetNumCores() - 1);
         if (worker_threads_num > MAX_SCRIPTCHECK_MUTEX_MODE_THRESHOLD) {
             fAtomic = true;
+            nBatchSize = 5;
+        } else {
+            fAtomic = false;
+            nBatchSize = batch_size;
         }
 
         LogInfo("Script verification uses %d additional threads", worker_threads_num);
@@ -247,6 +256,7 @@ public:
             return LoopMutex(true /* master thread */);
 
         nNext = 0;
+        fResultDone = false;
         {
             LOCK(m_mutex);
             if (!fComplete) fComplete = true;
