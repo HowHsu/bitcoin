@@ -4793,6 +4793,7 @@ VerifyDBResult CVerifyDB::VerifyDB(
     // store block count as we move pindex at check level >= 4
     int block_count = chainstate.m_chain.Height() - pindex->nHeight;
 
+    int64_t time_spent = 0;
     // check level 4: try reconnecting blocks
     if (nCheckLevel >= 4 && !skipped_l3_checks) {
         while (pindex != chainstate.m_chain.Tip()) {
@@ -4809,12 +4810,20 @@ VerifyDBResult CVerifyDB::VerifyDB(
                 LogPrintf("Verification error: ReadBlock failed at %d, hash=%s\n", pindex->nHeight, pindex->GetBlockHash().ToString());
                 return VerifyDBResult::CORRUPTED_BLOCK_DB;
             }
+
+            coins.Flush();
+        	auto start_time = NodeClock::now();
             if (!chainstate.ConnectBlock(block, state, pindex, coins)) {
                 LogPrintf("Verification error: found unconnectable block at %d, hash=%s (%s)\n", pindex->nHeight, pindex->GetBlockHash().ToString(), state.ToString());
                 return VerifyDBResult::CORRUPTED_BLOCK_DB;
             }
+
+        	int64_t dur_mcsec = std::chrono::duration_cast<std::chrono::microseconds>(NodeClock::now() - start_time).count();
+            time_spent += dur_mcsec;
+            coins.Flush();
             if (chainstate.m_chainman.m_interrupt) return VerifyDBResult::INTERRUPTED;
         }
+   	    std::cout<<"time spent for connect: "<<time_spent<<std::endl;
     }
 
     LogInfo("Verification: No coin database inconsistencies in last %i blocks (%i transactions)", block_count, nGoodTransactions);
