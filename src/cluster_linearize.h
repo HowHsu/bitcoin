@@ -1585,6 +1585,72 @@ public:
     }
 };
 
+/** Check if a cluster forms a single chain and, if so, compute an optimal linearization for it.
+ *
+ * A cluster is a chain if every transaction has at most one direct parent and at most one direct
+ * child. Equivalently, the multiset of ancestor-set sizes of all transactions equals {1,...,N}.
+ *
+ * @param[in] depgraph   Dependency graph of the cluster.
+ * @return               An optimal linearization, or an empty vector if not a chain.
+ *
+ * Complexity: O(N) where N = depgraph.TxCount().
+ */
+template<typename SetType>
+std::vector<DepGraphIndex> TryLinearizeChain(const DepGraph<SetType>& depgraph) noexcept
+{
+    const auto n = depgraph.TxCount();
+    if (n == 0) return {};
+
+    // A cluster with N transactions is a chain iff the ancestor-set sizes form exactly {1,...,N}.
+    // Check this in O(N) using a presence array (Ancestors().Count() is O(1) for BitSets).
+    std::vector<bool> seen(n + 1, false);
+    for (auto i : depgraph.Positions()) {
+        auto sz = depgraph.Ancestors(i).Count();
+        if (sz > n || seen[sz]) return {};
+        seen[sz] = true;
+    }
+
+    // Build topological order: the node with k ancestors occupies position k-1.
+    std::vector<DepGraphIndex> topo(n + 1);
+    for (auto i : depgraph.Positions()) {
+        topo[depgraph.Ancestors(i).Count()] = i;
+    }
+
+    // Apply a single forward merge pass to compute the optimal linearization.
+    // For a chain, every consecutive pair has a dependency (the later tx depends on the earlier),
+    // so no swaps ever occur — only merges. Total merges across all steps are at most N-1,
+    // giving O(N) overall.
+    //
+    // Maintain a stack of groups (contiguous segments in topological order). When a new
+    // transaction has strictly higher feerate than the top-of-stack group, merge them (always
+    // valid since in a chain the new tx depends on all prior groups). Repeat until the invariant
+    // (non-increasing feerate front-to-back) is restored.
+    struct Group {
+        FeeFrac feerate;
+        DepGraphIndex start;  ///< Index of this group's first transaction in result.
+    };
+    std::vector<DepGraphIndex> result;
+    result.reserve(n);
+    std::vector<Group> stack;
+    stack.reserve(n);
+
+    for (uint32_t k = 1; k <= n; ++k) {
+        DepGraphIndex idx = topo[k];
+        result.push_back(idx);
+        FeeFrac cur_feerate = depgraph.FeeRate(idx);
+        DepGraphIndex cur_start = k - 1;
+
+        while (!stack.empty() && cur_feerate >> stack.back().feerate) {
+            cur_feerate += stack.back().feerate;
+            cur_start = stack.back().start;
+            stack.pop_back();
+        }
+        stack.push_back({cur_feerate, cur_start});
+    }
+
+    return result;
+}
+
 /** Find or improve a linearization for a cluster.
  *
  * @param[in] depgraph            Dependency graph of the cluster to be linearized.
@@ -1614,6 +1680,13 @@ std::tuple<std::vector<DepGraphIndex>, bool, uint64_t> Linearize(
     std::span<const DepGraphIndex> old_linearization = {},
     bool is_topological = true) noexcept
 {
+    // Special case: chain clusters can be linearized optimally in O(N), bypassing the SPF
+    // algorithm entirely. A chain satisfies the PostLinearize optimality guarantee for both pass
+    // directions (each tx has at most one parent and at most one child).
+    if (auto chain_lin = TryLinearizeChain(depgraph); !chain_lin.empty()) {
+        return {std::move(chain_lin), true, 0};
+    }
+
     /** Initialize a spanning forest data structure for this cluster. */
     SpanningForestState forest(depgraph, rng_seed);
     if (!old_linearization.empty()) {
