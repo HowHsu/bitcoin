@@ -122,6 +122,25 @@ void BenchLinearizeOptimallyPerCost(benchmark::Bench& bench, const std::string& 
     }
 }
 
+/** Construct a chain graph with strictly increasing individual feerates (fee_i = i+1, size_i = 1).
+ *
+ * This is a pessimal feerate distribution for the SPF algorithm on chains: every transaction
+ * looks attractive in isolation (feerate i+1), but to include tx_i all its ancestors must be
+ * included too. As a result the only valid chunk with feerate greater than any strict prefix is
+ * the entire chain (feerate (N+1)/2), which SPF must discover through many improvement steps.
+ * TryLinearizeChain handles this in O(N) regardless of feerate distribution.
+ */
+template<typename SetType>
+DepGraph<SetType> MakeMonotoneChainGraph(DepGraphIndex ntx)
+{
+    DepGraph<SetType> depgraph;
+    for (DepGraphIndex i = 0; i < ntx; ++i) {
+        depgraph.AddTransaction({int64_t(i) + 1, 1});
+        if (i > 0) depgraph.AddDependencies(SetType::Singleton(i - 1), i);
+    }
+    return depgraph;
+}
+
 /** Benchmark Linearize on chain graphs of given sizes (total time to optimal). */
 void BenchLinearizeOptimallyChainTotal(benchmark::Bench& bench, const std::vector<DepGraphIndex>& chain_sizes)
 {
@@ -131,6 +150,26 @@ void BenchLinearizeOptimallyChainTotal(benchmark::Bench& bench, const std::vecto
         FastRandomContext rng{uint256(seed)};
         DepGraph<BitSet<64>> depgraph = MakeChainGraph<BitSet<64>>(ntx, rng);
         auto bench_name = strprintf("LinearizeOptimallyChainTotal_%utx_%udep", depgraph.TxCount(), depgraph.CountDependencies());
+
+        uint64_t rng_seed = 0;
+        bench.name(bench_name).run([&] {
+            auto [_lin, optimal, _cost] = Linearize(depgraph, /*max_iterations=*/10000000, rng_seed++, IndexTxOrder{});
+            assert(optimal);
+        });
+    }
+}
+
+/** Benchmark Linearize on monotone chain graphs (worst-case feerate distribution for SPF).
+ *
+ * Without TryLinearizeChain, the SPF algorithm must work through many improvement steps to
+ * discover that the entire chain is a single optimal chunk, exhibiting O(N^2) behaviour.
+ * With TryLinearizeChain the result is produced in O(N) regardless.
+ */
+void BenchLinearizeOptimallyMonotoneChainTotal(benchmark::Bench& bench, const std::vector<DepGraphIndex>& chain_sizes)
+{
+    for (DepGraphIndex ntx : chain_sizes) {
+        DepGraph<BitSet<64>> depgraph = MakeMonotoneChainGraph<BitSet<64>>(ntx);
+        auto bench_name = strprintf("LinearizeOptimallyMonotoneChainTotal_%utx_%udep", depgraph.TxCount(), depgraph.CountDependencies());
 
         uint64_t rng_seed = 0;
         bench.name(bench_name).run([&] {
@@ -216,6 +255,11 @@ static void LinearizeOptimallyChainTotal(benchmark::Bench& bench)
     BenchLinearizeOptimallyChainTotal(bench, CHAIN_SIZES);
 }
 
+static void LinearizeOptimallyMonotoneChainTotal(benchmark::Bench& bench)
+{
+    BenchLinearizeOptimallyMonotoneChainTotal(bench, CHAIN_SIZES);
+}
+
 BENCHMARK(PostLinearize16TxWorstCase);
 BENCHMARK(PostLinearize32TxWorstCase);
 BENCHMARK(PostLinearize48TxWorstCase);
@@ -233,3 +277,4 @@ BENCHMARK(PostLinearize99TxChain);
 BENCHMARK(LinearizeOptimallyTotal);
 BENCHMARK(LinearizeOptimallyPerCost);
 BENCHMARK(LinearizeOptimallyChainTotal);
+BENCHMARK(LinearizeOptimallyMonotoneChainTotal);
