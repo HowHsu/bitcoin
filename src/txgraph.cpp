@@ -11,6 +11,15 @@
 #include <util/feefrac.h>
 #include <util/vector.h>
 
+// BEGIN TEMPORARY: cluster dump instrumentation
+#include <crypto/hex_base.h>
+#include <serialize.h>
+#include <streams.h>
+#include <test/util/cluster_linearize.h>
+#include <fstream>
+#include <mutex>
+// END TEMPORARY
+
 #include <compare>
 #include <functional>
 #include <memory>
@@ -2155,6 +2164,40 @@ void TxGraphImpl::ApplyDependencies(int level) noexcept
     clusterset.m_group_data = GroupData{};
 }
 
+// BEGIN TEMPORARY: cluster dump instrumentation
+static std::mutex g_dump_mutex;
+static std::ofstream g_dump_file;
+static bool g_dump_initialized{false};
+
+template<typename SetType>
+void DumpClusterData(const DepGraph<SetType>& depgraph,
+                     const std::vector<DepGraphIndex>& old_lin,
+                     bool is_topological,
+                     uint64_t max_iters,
+                     uint64_t rng_seed)
+{
+    std::lock_guard lock(g_dump_mutex);
+    if (!g_dump_initialized) {
+        g_dump_file.open("/tmp/mempool_clusters.txt", std::ios::app);
+        g_dump_initialized = true;
+    }
+    if (!g_dump_file.is_open()) return;
+
+    // Serialize depgraph via DepGraphFormatter
+    DataStream ds;
+    ds << Using<DepGraphFormatter>(depgraph);
+    std::string hex = HexStr(std::span<const std::byte>(ds.data(), ds.size()));
+
+    // Write: <depgraph_hex> <is_topo> <max_iters> <rng_seed> <lin_count> <idx0> <idx1> ...
+    g_dump_file << hex << " " << (is_topological ? 1 : 0) << " " << max_iters << " " << rng_seed << " " << old_lin.size();
+    for (auto idx : old_lin) {
+        g_dump_file << " " << idx;
+    }
+    g_dump_file << "\n";
+    g_dump_file.flush();
+}
+// END TEMPORARY
+
 std::pair<uint64_t, bool> GenericClusterImpl::Relinearize(TxGraphImpl& graph, int level, uint64_t max_iters) noexcept
 {
     // We can only relinearize Clusters that do not need splitting.
@@ -2163,6 +2206,10 @@ std::pair<uint64_t, bool> GenericClusterImpl::Relinearize(TxGraphImpl& graph, in
     if (IsOptimal()) return {0, false};
     // Invoke the actual linearization algorithm (passing in the existing one).
     uint64_t rng_seed = graph.m_rng.rand64();
+
+    // BEGIN TEMPORARY: dump cluster data before linearization
+    DumpClusterData(m_depgraph, m_linearization, IsTopological(), max_iters, rng_seed);
+    // END TEMPORARY
     const auto fallback_order = [&](DepGraphIndex a, DepGraphIndex b) noexcept {
         const auto ref_a = graph.m_entries[m_mapping[a]].m_ref;
         const auto ref_b = graph.m_entries[m_mapping[b]].m_ref;
