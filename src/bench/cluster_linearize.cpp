@@ -4,7 +4,9 @@
 
 #include <bench/bench.h>
 #include <cluster_linearize.h>
+#include <crypto/hex_base.h>
 #include <random.h>
+#include <streams.h>
 #include <test/util/cluster_linearize.h>
 #include <util/bitset.h>
 #include <util/strencodings.h>
@@ -13,6 +15,9 @@
 #include <array>
 #include <cassert>
 #include <cstdint>
+#include <fstream>
+#include <sstream>
+#include <string>
 #include <vector>
 
 using namespace cluster_linearize;
@@ -260,6 +265,129 @@ static void LinearizeOptimallyMonotoneChainTotal(benchmark::Bench& bench)
 {
     BenchLinearizeOptimallyMonotoneChainTotal(bench, CHAIN_SIZES);
 }
+
+/** Data for one captured Relinearize() call. */
+struct CapturedCluster {
+    DepGraph<BitSet<64>> depgraph;
+    std::vector<DepGraphIndex> old_linearization;
+    bool is_topological;
+    uint64_t max_iters;
+    uint64_t rng_seed;
+};
+
+/** Load captured cluster data from /tmp/mempool_clusters.txt.
+ *
+ * File format (one cluster per line):
+ *   <depgraph_hex> <is_topo:0|1> <max_iters> <rng_seed> <lin_count> <idx0> <idx1> ...
+ */
+std::vector<CapturedCluster> LoadCapturedClusters()
+{
+    std::vector<CapturedCluster> result;
+    std::ifstream file("/tmp/mempool_clusters.txt");
+    if (!file.is_open()) return result;
+
+    std::string line;
+    while (std::getline(file, line)) {
+        if (line.empty()) continue;
+        std::istringstream iss(line);
+
+        std::string hex;
+        int is_topo;
+        uint64_t max_iters;
+        uint64_t rng_seed;
+        size_t lin_count;
+        iss >> hex >> is_topo >> max_iters >> rng_seed >> lin_count;
+        if (iss.fail()) continue;
+
+        // Deserialize depgraph
+        auto bytes = ParseHex(hex);
+        if (bytes.empty()) continue;
+        SpanReader reader{bytes};
+        CapturedCluster cluster;
+        try {
+            reader >> Using<DepGraphFormatter>(cluster.depgraph);
+        } catch (...) {
+            continue;
+        }
+        // Skip clusters that exceed BitSet<64> capacity
+        if (cluster.depgraph.TxCount() > 64) continue;
+
+        cluster.is_topological = (is_topo != 0);
+        cluster.max_iters = max_iters;
+        cluster.rng_seed = rng_seed;
+        cluster.old_linearization.resize(lin_count);
+        for (size_t i = 0; i < lin_count; ++i) {
+            unsigned idx;
+            iss >> idx;
+            cluster.old_linearization[i] = idx;
+        }
+
+        result.push_back(std::move(cluster));
+    }
+    return result;
+}
+
+/** Replay captured clusters through Linearize() (with TryLinearizeChain fast path)
+ *  and LinearizeSPF()+PostLinearize() (without fast path), comparing aggregate times.
+ *
+ * Each benchmark op = replay ALL captured clusters once.
+ */
+static void ReplayLinearizeWithChainFastPath(benchmark::Bench& bench)
+{
+    auto clusters = LoadCapturedClusters();
+    if (clusters.empty()) {
+        // No data file found; skip benchmark.
+        return;
+    }
+
+    size_t chain_count = 0;
+    size_t total_count = clusters.size();
+    size_t total_txs = 0;
+    for (const auto& c : clusters) {
+        total_txs += c.depgraph.TxCount();
+        if (!TryLinearizeChain(c.depgraph).empty()) ++chain_count;
+    }
+
+    auto bench_name = strprintf("ReplayWithFastPath_%uclusters_%utxs_%uchains",
+                                total_count, total_txs, chain_count);
+    bench.name(bench_name).run([&] {
+        for (const auto& c : clusters) {
+            auto [lin, optimal, cost, is_chain] = Linearize(
+                c.depgraph, c.max_iters, c.rng_seed, IndexTxOrder{},
+                c.old_linearization, c.is_topological);
+            if (!is_chain) PostLinearize(c.depgraph, lin);
+        }
+    });
+}
+
+static void ReplayLinearizeWithoutChainFastPath(benchmark::Bench& bench)
+{
+    auto clusters = LoadCapturedClusters();
+    if (clusters.empty()) return;
+
+    size_t chain_count = 0;
+    size_t total_count = clusters.size();
+    size_t total_txs = 0;
+    for (const auto& c : clusters) {
+        total_txs += c.depgraph.TxCount();
+        if (!TryLinearizeChain(c.depgraph).empty()) ++chain_count;
+    }
+
+    auto bench_name = strprintf("ReplayWithoutFastPath_%uclusters_%utxs_%uchains",
+                                total_count, total_txs, chain_count);
+    bench.name(bench_name).run([&] {
+        for (const auto& c : clusters) {
+            // Force SPF path: call LinearizeSPF directly, bypassing TryLinearizeChain
+            auto [lin, optimal, cost] = LinearizeSPF(
+                c.depgraph, c.max_iters, c.rng_seed, IndexTxOrder{},
+                c.old_linearization, c.is_topological);
+            PostLinearize(c.depgraph, lin);
+        }
+    });
+}
+
+BENCHMARK(ReplayLinearizeWithChainFastPath);
+BENCHMARK(ReplayLinearizeWithoutChainFastPath);
 
 BENCHMARK(PostLinearize16TxWorstCase);
 BENCHMARK(PostLinearize32TxWorstCase);
