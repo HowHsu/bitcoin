@@ -139,6 +139,8 @@ if(WITH_USDT)
   find_package(USDT MODULE REQUIRED)
 endif()
 
+option(WITH_TXGRAPH_TRACING "Enable TxGraph binary trace recording and replay tool." OFF)
+
 option(ENABLE_EXTERNAL_SIGNER "Enable external signer support." ON)
 
 cmake_dependent_option(WITH_QRENCODE "Enable QR code support." ON "BUILD_GUI" OFF)

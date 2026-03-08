@@ -414,6 +414,18 @@ if(BUILD_KERNEL_LIB)
 endif()
 
 
+if(WITH_TXGRAPH_TRACING)
+  target_sources(bitcoin_node PRIVATE txgraph_tracing.cpp)
+  target_compile_definitions(bitcoin_node PUBLIC ENABLE_TXGRAPH_TRACING=1)
+
+  add_executable(txgraph-replay txgraph_replay.cpp)
+  target_link_libraries(txgraph-replay
+    PRIVATE
+      core_interface
+      bitcoin_node
+  )
+endif()
+
 add_subdirectory(test/util)
 if(BUILD_BENCH)
   add_subdirectory(bench)
