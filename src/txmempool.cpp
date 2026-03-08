@@ -26,6 +26,10 @@
 #include <util/translation.h>
 #include <validationinterface.h>
 
+#ifdef ENABLE_TXGRAPH_TRACING
+#include <txgraph_tracing.h>
+#endif
+
 #include <algorithm>
 #include <cmath>
 #include <numeric>
@@ -185,6 +189,14 @@ CTxMemPool::CTxMemPool(Options opts, bilingual_str& error)
             const Txid& txid_b = static_cast<const CTxMemPoolEntry&>(b).GetTx().GetHash();
             return txid_a <=> txid_b;
         });
+#ifdef ENABLE_TXGRAPH_TRACING
+    m_txgraph = MakeTracingTxGraph(
+        std::move(m_txgraph),
+        m_opts.limits.cluster_count,
+        m_opts.limits.cluster_size_vbytes * WITNESS_SCALE_FACTOR,
+        ACCEPTABLE_COST,
+        std::getenv("TXGRAPH_TRACE_FILE"));
+#endif
 }
 
 bool CTxMemPool::isSpent(const COutPoint& outpoint) const

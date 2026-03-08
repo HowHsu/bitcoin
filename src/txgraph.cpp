@@ -19,6 +19,10 @@
 #include <unordered_set>
 #include <utility>
 
+#ifdef ENABLE_TXGRAPH_TRACING
+extern void (*g_txgraph_on_unlink_ref)(uint32_t);
+#endif
+
 namespace {
 
 using namespace cluster_linearize;
@@ -3552,6 +3556,9 @@ size_t TxGraphImpl::GetMainMemoryUsage() noexcept
 TxGraph::Ref::~Ref()
 {
     if (m_graph) {
+#ifdef ENABLE_TXGRAPH_TRACING
+        if (g_txgraph_on_unlink_ref) g_txgraph_on_unlink_ref(m_index);
+#endif
         // Inform the TxGraph about the Ref being destroyed.
         m_graph->UnlinkRef(m_index);
         m_graph = nullptr;
