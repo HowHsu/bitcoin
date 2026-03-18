@@ -6,7 +6,11 @@
  *  per-entry-point timing statistics. Used to compare TxGraph performance
  *  across different implementations (e.g. before/after optimisations).
  *
- *  Usage: txgraph-replay <trace_file>
+ *  Usage: txgraph-replay [--memory-csv=<file>] <trace_file>
+ *
+ *  --memory-csv: After each COMMIT_STAGING, call GetMainMemoryUsage() and append
+ *  (commit_index, usage_bytes) to the CSV. Samples every 100th COMMIT_STAGING to
+ *  yield ~17.6k points for txgraph.trace.4.5days.final. Use plot_memory_curve.py.
  */
 
 #include <txgraph.h>
@@ -85,15 +89,36 @@ static uint64_t ElapsedUs(Clock::time_point start)
 
 int main(int argc, char** argv)
 {
-    if (argc != 2) {
-        fprintf(stderr, "Usage: %s <trace_file>\n", argv[0]);
+    const char* trace_file = nullptr;
+    const char* memory_csv = nullptr;
+    for (int i = 1; i < argc; ++i) {
+        const char* arg = argv[i];
+        if (strncmp(arg, "--memory-csv=", 13) == 0) {
+            memory_csv = arg + 13;
+        } else if (arg[0] != '-') {
+            trace_file = arg;
+        }
+    }
+    if (!trace_file) {
+        fprintf(stderr, "Usage: %s [--memory-csv=<file>] <trace_file>\n", argv[0]);
         return 1;
     }
 
-    FILE* f = fopen(argv[1], "rb");
+    FILE* f = fopen(trace_file, "rb");
     if (!f) {
-        fprintf(stderr, "Error: cannot open '%s'\n", argv[1]);
+        fprintf(stderr, "Error: cannot open '%s'\n", trace_file);
         return 1;
+    }
+
+    FILE* mem_csv = nullptr;
+    if (memory_csv) {
+        mem_csv = fopen(memory_csv, "w");
+        if (!mem_csv) {
+            fprintf(stderr, "Error: cannot create '%s'\n", memory_csv);
+            fclose(f);
+            return 1;
+        }
+        fprintf(mem_csv, "commit_index,usage_bytes\n");
     }
 
     // ------------------------------------------------------------------
@@ -188,6 +213,7 @@ int main(int argc, char** argv)
     // Mutation counters (not timed, but counted).
     uint64_t add_tx_count{0}, remove_tx_count{0}, add_dep_count{0}, set_fee_count{0}, unlink_ref_count{0};
     uint64_t total_ops{0};
+    uint64_t commit_count{0};
 
     // ------------------------------------------------------------------
     // Replay loop
@@ -547,6 +573,11 @@ int main(int argc, char** argv)
             graph->CommitStaging();
             stats[opbyte].total_us += ElapsedUs(t0);
             ++stats[opbyte].calls;
+            if (mem_csv && (stats[opbyte].calls - 1) % 100 == 0) {
+                const size_t usage = graph->GetMainMemoryUsage();
+                fprintf(mem_csv, "%llu,%zu\n", (unsigned long long)(stats[opbyte].calls - 1), usage);
+                ++commit_count;
+            }
             break;
         }
 
@@ -562,10 +593,17 @@ eof_error:
 
 done:
     fclose(f);
+    if (mem_csv) {
+        fclose(mem_csv);
+        printf("Wrote %llu memory samples to CSV (every 100th COMMIT_STAGING)\n", (unsigned long long)commit_count);
+    }
 
     // ------------------------------------------------------------------
-    // Report
+    // Report (including TxGraph-internal memory via TotalMemoryUsage)
     // ------------------------------------------------------------------
+    const size_t final_usage = graph->GetMainMemoryUsage();
+    printf("\nTxGraph GetMainMemoryUsage (final): %zu bytes\n", final_usage);
+
     printf("\n=== TxGraph Replay Summary ===\n");
     printf("Total ops replayed: %llu\n", (unsigned long long)total_ops);
 
