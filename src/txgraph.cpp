@@ -11,7 +11,10 @@
 #include <util/feefrac.h>
 #include <util/vector.h>
 
+#include <chrono>
 #include <compare>
+#include <cstdio>
+#include <cstdlib>
 #include <functional>
 #include <memory>
 #include <set>
@@ -26,6 +29,38 @@ extern void (*g_txgraph_on_unlink_ref)(uint32_t);
 namespace {
 
 using namespace cluster_linearize;
+
+#ifdef TXGRAPH_ISOVERSIZED_PROFILE
+uint64_t g_group_splitall_us{0};
+uint64_t g_group_splitall_calls{0};
+uint64_t g_splitall_applyremovals_us{0};
+uint64_t g_split_per_cluster_applyremovals_us{0};
+uint64_t g_splitall_cluster_split_generic_us{0};
+uint64_t g_splitall_cluster_split_generic_calls{0};
+uint64_t g_splitall_cluster_split_chain_us{0};
+uint64_t g_splitall_cluster_split_chain_calls{0};
+uint64_t g_splitall_cluster_split_singleton_us{0};
+uint64_t g_splitall_cluster_split_singleton_calls{0};
+uint64_t g_chain_split_early_exit_us{0};
+uint64_t g_chain_split_early_exit_calls{0};
+uint64_t g_chain_split_append_us{0};
+uint64_t g_chain_split_insert_us{0};
+uint64_t g_chain_split_updated_us{0};
+uint64_t g_chain_split_compact_us{0};
+uint64_t g_chain_split_other_us{0};
+uint64_t g_chain_split_singleton_seg_us{0};
+uint64_t g_group_build_an_us{0};
+uint64_t g_group_build_an_calls{0};
+uint64_t g_group_union_find_us{0};
+uint64_t g_group_union_find_calls{0};
+uint64_t g_group_translate_us{0};
+uint64_t g_group_translate_calls{0};
+uint64_t g_group_compact_us{0};
+uint64_t g_group_compact_calls{0};
+uint64_t g_isoversized_cached_count{0};
+/** True when GroupClusters is called from IsOversized; only accumulate profile stats in that case. */
+thread_local bool g_group_profile_from_isoversized{false};
+#endif
 
 /** The maximum number of levels a TxGraph can have (0 = main, 1 = staging). */
 static constexpr int MAX_LEVELS{2};
@@ -1963,9 +1998,19 @@ bool ChainClusterImpl::Split(TxGraphImpl& graph, int level) noexcept
 
     // If there is exactly one contiguous segment and it is large enough, keep this cluster.
     if (m_split_segments.size() == 1 && m_split_segments[0] >= MIN_INTENDED_TX_COUNT) {
+#ifdef TXGRAPH_ISOVERSIZED_PROFILE
+        std::chrono::steady_clock::time_point t0;
+        if (g_group_profile_from_isoversized) t0 = std::chrono::steady_clock::now();
+#endif
         m_split_segments.clear();
         graph.SetClusterQuality(level, m_quality, m_setindex, QualityLevel::OPTIMAL);
         Updated(graph, /*level=*/level, /*rename=*/false);
+#ifdef TXGRAPH_ISOVERSIZED_PROFILE
+        if (g_group_profile_from_isoversized) {
+            g_chain_split_early_exit_us += std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - t0).count();
+            ++g_chain_split_early_exit_calls;
+        }
+#endif
         return false;
     }
 
@@ -1974,16 +2019,64 @@ bool ChainClusterImpl::Split(TxGraphImpl& graph, int level) noexcept
     DepGraphIndex offset = 0;
     for (auto seg_size : m_split_segments) {
         if (seg_size >= ChainClusterImpl::MIN_INTENDED_TX_COUNT) {
+#ifdef TXGRAPH_ISOVERSIZED_PROFILE
+            std::chrono::steady_clock::time_point t0, t1;
+            if (g_group_profile_from_isoversized) t0 = std::chrono::steady_clock::now();
+#endif
             auto new_cluster = graph.CreateEmptyChainCluster();
             auto* ptr = new_cluster.get();
+#ifdef TXGRAPH_ISOVERSIZED_PROFILE
+            if (g_group_profile_from_isoversized) {
+                t1 = std::chrono::steady_clock::now();
+                g_chain_split_other_us += std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count();
+                t0 = t1;
+            }
+#endif
             for (DepGraphIndex i = 0; i < seg_size; ++i) {
                 ptr->AppendTransaction(m_txdata[offset + i].graph_index, m_txdata[offset + i].feerate);
             }
+#ifdef TXGRAPH_ISOVERSIZED_PROFILE
+            if (g_group_profile_from_isoversized) {
+                t1 = std::chrono::steady_clock::now();
+                g_chain_split_append_us += std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count();
+                t0 = t1;
+            }
+#endif
             graph.InsertCluster(level, std::move(new_cluster), QualityLevel::OPTIMAL);
+#ifdef TXGRAPH_ISOVERSIZED_PROFILE
+            if (g_group_profile_from_isoversized) {
+                t1 = std::chrono::steady_clock::now();
+                g_chain_split_insert_us += std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count();
+                t0 = t1;
+            }
+#endif
             ptr->Updated(graph, /*level=*/level, /*rename=*/false);
+#ifdef TXGRAPH_ISOVERSIZED_PROFILE
+            if (g_group_profile_from_isoversized) {
+                t1 = std::chrono::steady_clock::now();
+                g_chain_split_updated_us += std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count();
+                t0 = t1;
+            }
+#endif
             ptr->Compact();
+#ifdef TXGRAPH_ISOVERSIZED_PROFILE
+            if (g_group_profile_from_isoversized) {
+                t1 = std::chrono::steady_clock::now();
+                g_chain_split_compact_us += std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count();
+                t0 = t1;
+            }
+#endif
             graph.GetClusterSet(level).m_cluster_usage += ptr->TotalMemoryUsage();
+#ifdef TXGRAPH_ISOVERSIZED_PROFILE
+            if (g_group_profile_from_isoversized) {
+                g_chain_split_other_us += std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - t0).count();
+            }
+#endif
         } else {
+#ifdef TXGRAPH_ISOVERSIZED_PROFILE
+            std::chrono::steady_clock::time_point t0;
+            if (g_group_profile_from_isoversized) t0 = std::chrono::steady_clock::now();
+#endif
             for (DepGraphIndex i = 0; i < seg_size; ++i) {
                 auto new_cluster = graph.CreateEmptyCluster(1);
                 auto* ptr = new_cluster.get();
@@ -1993,6 +2086,11 @@ bool ChainClusterImpl::Split(TxGraphImpl& graph, int level) noexcept
                 ptr->Compact();
                 graph.GetClusterSet(level).m_cluster_usage += ptr->TotalMemoryUsage();
             }
+#ifdef TXGRAPH_ISOVERSIZED_PROFILE
+            if (g_group_profile_from_isoversized) {
+                g_chain_split_singleton_seg_us += std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - t0).count();
+            }
+#endif
         }
         offset += seg_size;
     }
@@ -2414,8 +2512,34 @@ void TxGraphImpl::Split(Cluster& cluster, int level) noexcept
 {
     // To split a Cluster, first make sure all removals are applied (as we might need to split
     // again afterwards otherwise).
+#ifdef TXGRAPH_ISOVERSIZED_PROFILE
+    std::chrono::steady_clock::time_point t_ar;
+    if (g_group_profile_from_isoversized) t_ar = std::chrono::steady_clock::now();
+#endif
     ApplyRemovals(level);
+#ifdef TXGRAPH_ISOVERSIZED_PROFILE
+    if (g_group_profile_from_isoversized) {
+        g_split_per_cluster_applyremovals_us += std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - t_ar).count();
+    }
+    std::chrono::steady_clock::time_point t_cluster_split;
+    if (g_group_profile_from_isoversized) t_cluster_split = std::chrono::steady_clock::now();
+#endif
     bool del = cluster.Split(*this, level);
+#ifdef TXGRAPH_ISOVERSIZED_PROFILE
+    if (g_group_profile_from_isoversized) {
+        auto us = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - t_cluster_split).count();
+        if (dynamic_cast<ChainClusterImpl*>(&cluster)) {
+            g_splitall_cluster_split_chain_us += us;
+            ++g_splitall_cluster_split_chain_calls;
+        } else if (dynamic_cast<SingletonClusterImpl*>(&cluster)) {
+            g_splitall_cluster_split_singleton_us += us;
+            ++g_splitall_cluster_split_singleton_calls;
+        } else {
+            g_splitall_cluster_split_generic_us += us;
+            ++g_splitall_cluster_split_generic_calls;
+        }
+    }
+#endif
     if (del) {
         // Cluster::Split reports whether the Cluster is to be deleted.
         DeleteCluster(cluster, level);
@@ -2426,7 +2550,16 @@ void TxGraphImpl::SplitAll(int up_to_level) noexcept
 {
     Assume(up_to_level >= 0 && up_to_level <= GetTopLevel());
     // Before splitting all Cluster, first make sure all removals are applied.
+#ifdef TXGRAPH_ISOVERSIZED_PROFILE
+    std::chrono::steady_clock::time_point t_apply;
+    if (g_group_profile_from_isoversized) t_apply = std::chrono::steady_clock::now();
+#endif
     ApplyRemovals(up_to_level);
+#ifdef TXGRAPH_ISOVERSIZED_PROFILE
+    if (g_group_profile_from_isoversized) {
+        g_splitall_applyremovals_us += std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - t_apply).count();
+    }
+#endif
     for (int level = 0; level <= up_to_level; ++level) {
         for (auto quality : {QualityLevel::NEEDS_SPLIT_FIX, QualityLevel::NEEDS_SPLIT}) {
             auto& queue = GetClusterSet(level).m_clusters[int(quality)];
@@ -2446,7 +2579,17 @@ void TxGraphImpl::GroupClusters(int level) noexcept
     // Before computing which Clusters need to be merged together, first apply all removals and
     // split the Clusters into connected components. If we would group first, we might end up
     // with inefficient and/or oversized Clusters which just end up being split again anyway.
+#ifdef TXGRAPH_ISOVERSIZED_PROFILE
+    std::chrono::steady_clock::time_point t_split;
+    if (g_group_profile_from_isoversized) t_split = std::chrono::steady_clock::now();
+#endif
     SplitAll(level);
+#ifdef TXGRAPH_ISOVERSIZED_PROFILE
+    if (g_group_profile_from_isoversized) {
+        g_group_splitall_us += std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - t_split).count();
+        ++g_group_splitall_calls;
+    }
+#endif
 
     /** Annotated clusters: an entry for each Cluster, together with the sequence number for the
      *  representative for the partition it is in (initially its own, later that of the
@@ -2458,6 +2601,10 @@ void TxGraphImpl::GroupClusters(int level) noexcept
      *  to-be-merged group). */
     std::vector<std::pair<std::pair<GraphIndex, GraphIndex>, uint64_t>> an_deps;
 
+#ifdef TXGRAPH_ISOVERSIZED_PROFILE
+    std::chrono::steady_clock::time_point t_build;
+    if (g_group_profile_from_isoversized) t_build = std::chrono::steady_clock::now();
+#endif
     // Construct an an_clusters entry for every oversized cluster, including ones from levels below,
     // as they may be inherited in this one.
     for (int level_iter = 0; level_iter <= level; ++level_iter) {
@@ -2490,6 +2637,14 @@ void TxGraphImpl::GroupClusters(int level) noexcept
     an_clusters.erase(std::unique(an_clusters.begin(), an_clusters.end()), an_clusters.end());
     // Sort an_deps by applying the same order to the involved child cluster.
     std::sort(an_deps.begin(), an_deps.end(), [&](auto& a, auto& b) noexcept { return a.second < b.second; });
+#ifdef TXGRAPH_ISOVERSIZED_PROFILE
+    if (g_group_profile_from_isoversized) {
+        g_group_build_an_us += std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - t_build).count();
+        ++g_group_build_an_calls;
+    }
+    std::chrono::steady_clock::time_point t_uf;
+    if (g_group_profile_from_isoversized) t_uf = std::chrono::steady_clock::now();
+#endif
 
     // Run the union-find algorithm to find partitions of the input Clusters which need to be
     // grouped together. See https://en.wikipedia.org/wiki/Disjoint-set_data_structure.
@@ -2599,6 +2754,14 @@ void TxGraphImpl::GroupClusters(int level) noexcept
             }
         }
     }
+#ifdef TXGRAPH_ISOVERSIZED_PROFILE
+    if (g_group_profile_from_isoversized) {
+        g_group_union_find_us += std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - t_uf).count();
+        ++g_group_union_find_calls;
+    }
+    std::chrono::steady_clock::time_point t_translate;
+    if (g_group_profile_from_isoversized) t_translate = std::chrono::steady_clock::now();
+#endif
 
     // Sort both an_clusters and an_deps by sequence number of the representative of the
     // partition they are in, grouping all those applying to the same partition together.
@@ -2649,7 +2812,21 @@ void TxGraphImpl::GroupClusters(int level) noexcept
     }
     Assume(an_deps_it == an_deps.end());
     Assume(an_clusters_it == an_clusters.end());
+#ifdef TXGRAPH_ISOVERSIZED_PROFILE
+    if (g_group_profile_from_isoversized) {
+        g_group_translate_us += std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - t_translate).count();
+        ++g_group_translate_calls;
+    }
+    std::chrono::steady_clock::time_point t_compact;
+    if (g_group_profile_from_isoversized) t_compact = std::chrono::steady_clock::now();
+#endif
     Compact();
+#ifdef TXGRAPH_ISOVERSIZED_PROFILE
+    if (g_group_profile_from_isoversized) {
+        g_group_compact_us += std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - t_compact).count();
+        ++g_group_compact_calls;
+    }
+#endif
 }
 
 void TxGraphImpl::Merge(std::span<Cluster*> to_merge, int level) noexcept
@@ -3314,15 +3491,76 @@ bool TxGraphImpl::IsOversized(Level level_select) noexcept
     auto& clusterset = GetClusterSet(level);
     if (clusterset.m_oversized.has_value()) {
         // Return cached value if known.
+#ifdef TXGRAPH_ISOVERSIZED_PROFILE
+        ++g_isoversized_cached_count;
+#endif
         return *clusterset.m_oversized;
     }
+#ifdef TXGRAPH_ISOVERSIZED_PROFILE
+    auto t0 = std::chrono::steady_clock::now();
+#endif
     ApplyRemovals(level);
+#ifdef TXGRAPH_ISOVERSIZED_PROFILE
+    auto t1 = std::chrono::steady_clock::now();
+    auto apply_us = std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count();
+    static uint64_t s_apply_total_us{0};
+    static uint64_t s_apply_count{0};
+    static uint64_t s_group_total_us{0};
+    static uint64_t s_group_count{0};
+    static bool s_atexit_registered{false};
+    if (!s_atexit_registered) {
+        s_atexit_registered = true;
+        std::atexit([]() {
+            printf("\n[IsOversized profile] cached returns: %lu calls\n",
+                   (unsigned long)g_isoversized_cached_count);
+            printf("[IsOversized profile] ApplyRemovals: total=%lu us, calls=%lu\n",
+                   (unsigned long)s_apply_total_us, (unsigned long)s_apply_count);
+            printf("[IsOversized profile] GroupClusters: total=%lu us, calls=%lu\n",
+                   (unsigned long)s_group_total_us, (unsigned long)s_group_count);
+            printf("[IsOversized profile] GroupClusters breakdown:\n");
+            printf("  SplitAll:    total=%lu us, calls=%lu\n",
+                   (unsigned long)g_group_splitall_us, (unsigned long)g_group_splitall_calls);
+            printf("    ApplyRemovals (top-level):       total=%lu us\n", (unsigned long)g_splitall_applyremovals_us);
+            printf("    ApplyRemovals (per-cluster):     total=%lu us\n", (unsigned long)g_split_per_cluster_applyremovals_us);
+            printf("    cluster->Split:    generic=%lu us (%lu calls), chain=%lu us (%lu calls), singleton=%lu us (%lu calls)\n",
+                   (unsigned long)g_splitall_cluster_split_generic_us, (unsigned long)g_splitall_cluster_split_generic_calls,
+                   (unsigned long)g_splitall_cluster_split_chain_us, (unsigned long)g_splitall_cluster_split_chain_calls,
+                   (unsigned long)g_splitall_cluster_split_singleton_us, (unsigned long)g_splitall_cluster_split_singleton_calls);
+            printf("    ChainClusterImpl::Split breakdown: early_exit=%lu us (%lu calls), append=%lu us, insert=%lu us, updated=%lu us, compact=%lu us, other=%lu us, singleton_seg=%lu us\n",
+                   (unsigned long)g_chain_split_early_exit_us, (unsigned long)g_chain_split_early_exit_calls,
+                   (unsigned long)g_chain_split_append_us, (unsigned long)g_chain_split_insert_us,
+                   (unsigned long)g_chain_split_updated_us, (unsigned long)g_chain_split_compact_us,
+                   (unsigned long)g_chain_split_other_us, (unsigned long)g_chain_split_singleton_seg_us);
+            printf("  build_an:    total=%lu us, calls=%lu\n",
+                   (unsigned long)g_group_build_an_us, (unsigned long)g_group_build_an_calls);
+            printf("  union_find:  total=%lu us, calls=%lu\n",
+                   (unsigned long)g_group_union_find_us, (unsigned long)g_group_union_find_calls);
+            printf("  translate:   total=%lu us, calls=%lu\n",
+                   (unsigned long)g_group_translate_us, (unsigned long)g_group_translate_calls);
+            printf("  compact:     total=%lu us, calls=%lu\n",
+                   (unsigned long)g_group_compact_us, (unsigned long)g_group_compact_calls);
+        });
+    }
+    s_apply_total_us += apply_us;
+    ++s_apply_count;
+#endif
     if (clusterset.m_txcount_oversized > 0) {
         clusterset.m_oversized = true;
     } else {
         // Find which Clusters will need to be merged together, as that is where the oversize
         // property is assessed.
+#ifdef TXGRAPH_ISOVERSIZED_PROFILE
+        auto t2 = std::chrono::steady_clock::now();
+        g_group_profile_from_isoversized = true;
+#endif
         GroupClusters(level);
+#ifdef TXGRAPH_ISOVERSIZED_PROFILE
+        g_group_profile_from_isoversized = false;
+        auto t3 = std::chrono::steady_clock::now();
+        auto group_us = std::chrono::duration_cast<std::chrono::microseconds>(t3 - t2).count();
+        s_group_total_us += group_us;
+        ++s_group_count;
+#endif
     }
     Assume(clusterset.m_oversized.has_value());
     return *clusterset.m_oversized;
