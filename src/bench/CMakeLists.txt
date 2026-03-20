@@ -70,6 +70,10 @@ target_link_libraries(bench_bitcoin
   Boost::headers
 )
 
+if(WITH_TXGRAPH_ISOVERSIZED_PROFILE)
+  target_compile_definitions(bench_bitcoin PRIVATE TXGRAPH_ISOVERSIZED_PROFILE=1)
+endif()
+
 if(ENABLE_WALLET)
   target_sources(bench_bitcoin
     PRIVATE

@@ -414,6 +414,10 @@ if(BUILD_KERNEL_LIB)
 endif()
 
 
+if(WITH_TXGRAPH_ISOVERSIZED_PROFILE)
+  target_compile_definitions(bitcoin_node PRIVATE TXGRAPH_ISOVERSIZED_PROFILE=1)
+endif()
+
 if(WITH_TXGRAPH_TRACING)
   target_sources(bitcoin_node PRIVATE txgraph_tracing.cpp)
   target_compile_definitions(bitcoin_node PUBLIC ENABLE_TXGRAPH_TRACING=1)

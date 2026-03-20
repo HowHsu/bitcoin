@@ -140,6 +140,7 @@ if(WITH_USDT)
 endif()
 
 option(WITH_TXGRAPH_TRACING "Enable TxGraph binary trace recording and replay tool." OFF)
+option(WITH_TXGRAPH_ISOVERSIZED_PROFILE "Enable IsOversized timing debug output to stderr." OFF)
 
 option(ENABLE_EXTERNAL_SIGNER "Enable external signer support." ON)
 
