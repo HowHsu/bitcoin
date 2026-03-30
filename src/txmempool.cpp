@@ -36,6 +36,7 @@
 
 TRACEPOINT_SEMAPHORE(mempool, added);
 TRACEPOINT_SEMAPHORE(mempool, removed);
+TRACEPOINT_SEMAPHORE(txgraph, init);
 
 bool TestLockPointValidity(CChain& active_chain, const LockPoints& lp)
 {
@@ -185,6 +186,11 @@ CTxMemPool::CTxMemPool(Options opts, bilingual_str& error)
             const Txid& txid_b = static_cast<const CTxMemPoolEntry&>(b).GetTx().GetHash();
             return txid_a <=> txid_b;
         });
+    TRACEPOINT(txgraph, init,
+        (uint64_t)m_opts.limits.cluster_count,
+        (uint64_t)(m_opts.limits.cluster_size_vbytes * WITNESS_SCALE_FACTOR),
+        (uint64_t)ACCEPTABLE_COST
+    );
 }
 
 bool CTxMemPool::isSpent(const COutPoint& outpoint) const
