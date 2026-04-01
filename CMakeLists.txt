@@ -183,6 +183,7 @@ endif()
 
 option(BUILD_BENCH "Build bench_bitcoin executable." OFF)
 option(BUILD_FUZZ_BINARY "Build fuzz binary." OFF)
+option(BUILD_TXGRAPH_REPLAY "Build txgraph-replay trace replay tool." OFF)
 option(BUILD_FOR_FUZZING "Build for fuzzing. Enabling this will disable all other targets and override BUILD_FUZZ_BINARY." OFF)
 
 option(INSTALL_MAN "Install man pages." ON)

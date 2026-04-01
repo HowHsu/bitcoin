@@ -426,3 +426,8 @@ endif()
 if(BUILD_FUZZ_BINARY)
   add_subdirectory(test/fuzz)
 endif()
+
+if(BUILD_TXGRAPH_REPLAY)
+  target_compile_definitions(bitcoin_node PUBLIC ENABLE_TXGRAPH_REPLAY=1)
+  add_subdirectory(${PROJECT_SOURCE_DIR}/contrib/tracing/txgraph contrib/tracing/txgraph)
+endif()
