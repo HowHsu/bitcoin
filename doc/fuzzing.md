@@ -186,6 +186,47 @@ There are 3 ways fuzz tests can be built:
    tests would not be useful. This build is only useful for ensuring fuzz tests
    compile and link.
 
+## Detecting global state that leaks between iterations
+
+A fuzz target should produce the same result regardless of which inputs ran
+before it. Mutable global state that survives one iteration and is read by the
+next is a source of instability and non-determinism (see issue #29018). The
+`CheckGlobals` helper already catches a few known cases (use of the global PRNG
+and of system time), but only those.
+
+The `ENABLE_GLOBAL_STATE_CHECK` option adds a generic detector. It snapshots the
+main program's writable ELF segments (its `.data`/`.bss`) and diffs them after
+every input, reporting any byte that changed from the previous baseline together
+with the symbol it falls in (resolved from the binary's `.symtab`). It is Linux
+only and off by default.
+
+Use it with a **standalone** fuzz build, i.e. one without a fuzzing-engine
+sanitizer. libFuzzer's `-fsanitize=fuzzer` embeds its coverage counters
+(`__sancov_cntrs`) in the writable segments; those change on every input by
+design and would swamp the report. A standalone build replays the corpus
+in-process, file by file, which is exactly what the detector needs.
+
+```sh
+$ cmake -B build_gsc -DBUILD_FOR_FUZZING=ON -DENABLE_GLOBAL_STATE_CHECK=ON \
+        -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++
+$ cmake --build build_gsc --target fuzz
+$ find /path/to/qa-assets/fuzz_corpora/process_messages -type f | \
+      xargs env FUZZ=process_messages ./build_gsc/bin/fuzz
+...
+[global-state] CHANGE 0x5eae1d5c9410 len=1 sym=_ZL18g_mock_steady_time.0
+```
+
+Each `CHANGE` line points at a global that one input modified and that was not
+reset before the next input. The binary must be unstripped (the default) so the
+symbol table can name the drifting globals.
+
+What it does **not** see: only the main program's writable `PT_LOAD` segments
+are snapshotted, so the heap, stack, thread-local storage and shared memory are
+invisible -- a pointer stored in a global is compared, but the heap object it
+points to is not. The option is incompatible with coverage builds
+(`-fprofile-instr-generate`), whose counters would otherwise be reported as
+drift.
+
 ## macOS notes
 
 Support for fuzzing on macOS is not officially maintained by this project. If
