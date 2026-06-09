@@ -23,3 +23,9 @@ target_link_libraries(test_fuzz
 if(NOT FUZZ_BINARY_LINKS_WITHOUT_MAIN_FUNCTION)
   target_compile_definitions(test_fuzz PRIVATE PROVIDE_FUZZ_MAIN_FUNCTION)
 endif()
+
+if(ENABLE_GLOBAL_STATE_CHECK)
+  target_sources(test_fuzz PRIVATE global_state.cpp)
+  target_compile_definitions(test_fuzz PRIVATE ENABLE_GLOBAL_STATE_CHECK)
+  target_link_libraries(test_fuzz PRIVATE ${CMAKE_DL_LIBS})
+endif()
