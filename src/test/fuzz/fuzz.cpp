@@ -7,6 +7,9 @@
 #include <netaddress.h>
 #include <netbase.h>
 #include <test/fuzz/util/check_globals.h>
+#ifdef ENABLE_GLOBAL_STATE_CHECK
+#include <test/fuzz/util/global_state.h>
+#endif
 #include <test/util/coverage.h>
 #include <test/util/random.h>
 #include <test/util/setup_common.h>
@@ -83,7 +86,13 @@ static const TypeTestOneInput* g_test_one_input{nullptr};
 static void test_one_input(FuzzBufferType buffer)
 {
     CheckGlobals check{};
+#ifdef ENABLE_GLOBAL_STATE_CHECK
+    global_state::BeforeInput();
+#endif
     (*Assert(g_test_one_input))(buffer);
+#ifdef ENABLE_GLOBAL_STATE_CHECK
+    global_state::Check();
+#endif
 }
 
 const std::function<std::string()> G_TEST_GET_FULL_NAME{[]{
