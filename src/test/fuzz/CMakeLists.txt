@@ -156,6 +156,15 @@ target_link_libraries(fuzz
   Boost::headers
 )
 
+if(ENABLE_GLOBAL_STATE_CHECK)
+  if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    message(FATAL_ERROR "ENABLE_GLOBAL_STATE_CHECK is only supported on Linux.")
+  endif()
+  if(CMAKE_CXX_FLAGS MATCHES "fprofile-instr-generate" OR CMAKE_CXX_FLAGS MATCHES "fcoverage-mapping" OR CMAKE_CXX_FLAGS MATCHES "fprofile-arcs")
+    message(FATAL_ERROR "ENABLE_GLOBAL_STATE_CHECK does not support coverage builds: the coverage counters would be reported as global-state drift. Disable coverage or ENABLE_GLOBAL_STATE_CHECK.")
+  endif()
+endif()
+
 if(ENABLE_WALLET)
   add_subdirectory(${PROJECT_SOURCE_DIR}/src/wallet/test/fuzz wallet)
 endif()
