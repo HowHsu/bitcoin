@@ -76,6 +76,10 @@ FUZZ_TARGET(process_messages, .init = initialize_process_messages)
     chainman.ResetIbd();
     chainman.DisableNextWrite();
 
+    if (fuzzed_data_provider.ConsumeBool()) {
+        chainman.JumpOutOfIbd();
+    }
+
     // Reset, so that dangling pointers can be detected by sanitizers.
     node.banman.reset();
     node.addrman.reset();

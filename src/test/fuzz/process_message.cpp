@@ -125,6 +125,10 @@ FUZZ_TARGET(process_message, .init = initialize_process_message)
     connman.FlushSendBuffer(p2p_node);
     (void)connman.ReceiveMsgFrom(p2p_node, std::move(net_msg));
 
+    if (fuzzed_data_provider.ConsumeBool()) {
+        chainman.JumpOutOfIbd();
+    }
+
     bool more_work{true};
     while (more_work) {
         p2p_node.fPauseSend = false;
