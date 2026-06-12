@@ -20,6 +20,7 @@
 #include <test/util/mining.h>
 #include <test/util/net.h>
 #include <test/util/random.h>
+#include <test/util/script.h>
 #include <test/util/setup_common.h>
 #include <test/util/time.h>
 #include <test/util/validation.h>
@@ -50,8 +51,9 @@ void ResetChainman(TestingSetup& setup)
     setup.m_node.chainman.reset();
     setup.m_make_chainman();
     setup.LoadVerifyActivateChainstate();
+    node::BlockCreateOptions options;
+    options.coinbase_output_script = P2WSH_OP_TRUE;
     for (int i = 0; i < 2 * COINBASE_MATURITY; i++) {
-        node::BlockCreateOptions options;
         MineBlock(setup.m_node, options);
     }
 }
