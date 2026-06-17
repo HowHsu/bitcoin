@@ -4,6 +4,7 @@
 
 #include <addrman.h>
 #include <banman.h>
+#include <chainparams.h>
 #include <consensus/consensus.h>
 #include <kernel/chainparams.h>
 #include <net.h>
@@ -23,10 +24,12 @@
 #include <test/util/script.h>
 #include <test/util/setup_common.h>
 #include <test/util/time.h>
+#include <test/util/txmempool.h>
 #include <test/util/validation.h>
 #include <uint256.h>
 #include <util/check.h>
 #include <util/time.h>
+#include <util/translation.h>
 #include <validation.h>
 #include <validationinterface.h>
 
@@ -46,9 +49,15 @@ namespace {
 TestingSetup* g_setup;
 std::string_view LIMIT_TO_MESSAGE_TYPE{};
 
-void ResetChainman(TestingSetup& setup)
+void ResetChainmanAndMempool(TestingSetup& setup)
 {
-    SetMockTime(setup.m_node.chainman->GetParams().GenesisBlock().Time());
+    SetMockTime(Params().GenesisBlock().Time());
+
+    bilingual_str error{};
+    setup.m_node.mempool.reset();
+    setup.m_node.mempool = std::make_unique<CTxMemPool>(MemPoolOptionsForTest(setup.m_node), error);
+    Assert(error.empty());
+
     setup.m_node.chainman.reset();
     setup.m_make_chainman();
     setup.LoadVerifyActivateChainstate();
@@ -75,7 +84,7 @@ void initialize_process_message()
             {}),
     };
     g_setup = testing_setup.get();
-    ResetChainman(*g_setup);
+    ResetChainmanAndMempool(*g_setup);
 }
 
 FUZZ_TARGET(process_message, .init = initialize_process_message)
@@ -88,6 +97,7 @@ FUZZ_TARGET(process_message, .init = initialize_process_message)
     connman.Reset();
     auto& chainman{static_cast<TestChainstateManager&>(*node.chainman)};
     const auto block_index_size{WITH_LOCK(chainman.GetMutex(), return chainman.BlockIndex().size())};
+    const auto initial_sequence{WITH_LOCK(node.mempool->cs, return node.mempool->GetSequence())};
     FakeNodeClock clock{1610000000s}; // any time to successfully reset ibd
     chainman.ResetIbd();
     chainman.DisableNextWrite();
@@ -146,11 +156,15 @@ FUZZ_TARGET(process_message, .init = initialize_process_message)
     node.validation_signals->SyncWithValidationInterfaceQueue();
     node.validation_signals->UnregisterValidationInterface(node.peerman.get());
     node.connman->StopNodes();
-    if (block_index_size != WITH_LOCK(chainman.GetMutex(), return chainman.BlockIndex().size())) {
-        // Reuse the global chainman, but reset it when it is dirty. Reset the rng
-        // first, so the rebuild starts from a deterministic state rather than the
-        // rng already consumed by this iteration.
+    const auto end_sequence{WITH_LOCK(node.mempool->cs, return node.mempool->GetSequence())};
+    if (block_index_size != WITH_LOCK(chainman.GetMutex(), return chainman.BlockIndex().size()) || initial_sequence != end_sequence) {
+        // Reuse the global chainman and mempool, but reset them when dirty. The
+        // mempool sequence is compared instead of its size because a tx may be
+        // added and removed within one iteration, leaving the size unchanged
+        // while the mempool state is dirty. Reset the rng first, so the rebuild
+        // starts from a deterministic state rather than the rng already consumed
+        // by this iteration.
         MakeRandDeterministicDANGEROUS(uint256::ZERO);
-        ResetChainman(*g_setup);
+        ResetChainmanAndMempool(*g_setup);
     }
 }
